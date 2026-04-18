@@ -166,11 +166,9 @@
 
   // FP32Vec16::exp() in cpu_types_riscv.hpp already implements the full
   // polynomial approximation for RVV, so we simply delegate to it.
-  #define DEFINE_FAST_EXP                                                      \
-    auto fast_exp = [&](const vec_op::FP32Vec16& vec)                          \
-                        __attribute__((always_inline)) {                       \
-      return vec.exp();                                                        \
-    };
+  #define DEFINE_FAST_EXP                             \
+    auto fast_exp = [&](const vec_op::FP32Vec16& vec) \
+                        __attribute__((always_inline)) { return vec.exp(); };
 
 #endif  // __riscv_v
 

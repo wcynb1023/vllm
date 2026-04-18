@@ -26,8 +26,12 @@ from vllm.v1.kv_cache_interface import AttentionSpec, CrossAttentionSpec
 
 logger = init_logger(__name__)
 
-_CPU_ARCH_PREFER_MIXED_BATCH = (CpuArchEnum.X86, CpuArchEnum.ARM, CpuArchEnum.S390X,
-                                CpuArchEnum.RISCV)
+_CPU_ARCH_PREFER_MIXED_BATCH = (
+    CpuArchEnum.X86,
+    CpuArchEnum.ARM,
+    CpuArchEnum.S390X,
+    CpuArchEnum.RISCV,
+)
 
 
 class CPUAttentionBackend(AttentionBackend):

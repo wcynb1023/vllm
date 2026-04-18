@@ -109,13 +109,13 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
 #undef DECL_ACC
 
   // initialize accumulators
-#define INIT_ACC(i)                                          \
-  IF_M(i) {                                                  \
-    if (accumulate) {                                        \
-      acc##i = __riscv_vle32_v_f32m2(C + (i) * ldc, vl);    \
-    } else {                                                 \
-      acc##i = __riscv_vfmv_v_f_f32m2(0.f, vl);             \
-    }                                                        \
+#define INIT_ACC(i)                                      \
+  IF_M(i) {                                              \
+    if (accumulate) {                                    \
+      acc##i = __riscv_vle32_v_f32m2(C + (i) * ldc, vl); \
+    } else {                                             \
+      acc##i = __riscv_vfmv_v_f_f32m2(0.f, vl);          \
+    }                                                    \
   }
   ROWS_APPLY(INIT_ACC)
 #undef INIT_ACC
@@ -128,7 +128,7 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 0) * ldb);
-#define STEP_K0(i)                                                             \
+#define STEP_K0(i) \
   IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 0), b, vl); }
       ROWS_APPLY(STEP_K0)
 #undef STEP_K0
@@ -137,7 +137,7 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 1) * ldb);
-#define STEP_K1(i)                                                             \
+#define STEP_K1(i) \
   IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 1), b, vl); }
       ROWS_APPLY(STEP_K1)
 #undef STEP_K1
@@ -146,7 +146,7 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 2) * ldb);
-#define STEP_K2(i)                                                             \
+#define STEP_K2(i) \
   IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 2), b, vl); }
       ROWS_APPLY(STEP_K2)
 #undef STEP_K2
@@ -155,7 +155,7 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 3) * ldb);
-#define STEP_K3(i)                                                             \
+#define STEP_K3(i) \
   IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 3), b, vl); }
       ROWS_APPLY(STEP_K3)
 #undef STEP_K3
@@ -164,16 +164,15 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
 
   // K tail
   for (; k < K; ++k) {
-    fixed_vfloat32m2_t b =
-        load_row8_B_as_f32<kv_cache_t>(B + (int64_t)k * ldb);
-#define TAIL_ROW(i)                                                            \
+    fixed_vfloat32m2_t b = load_row8_B_as_f32<kv_cache_t>(B + (int64_t)k * ldb);
+#define TAIL_ROW(i) \
   IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k), b, vl); }
     ROWS_APPLY(TAIL_ROW)
 #undef TAIL_ROW
   }
 
   // store accumulators to C
-#define STORE_ROW(i)                                         \
+#define STORE_ROW(i) \
   IF_M(i) { __riscv_vse32_v_f32m2(C + (i) * ldc, acc##i, vl); }
   ROWS_APPLY(STORE_ROW)
 #undef STORE_ROW
@@ -188,11 +187,11 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
 
 template <int32_t N, typename kv_cache_t>
 FORCE_INLINE void gemm_macro_rvv_fma_Mx8_Ku4(const float* __restrict A,
-                                              const kv_cache_t* __restrict B,
-                                              float* __restrict C, int32_t M,
-                                              int32_t K, int64_t lda,
-                                              int64_t ldb, int64_t ldc,
-                                              bool accumulate) {
+                                             const kv_cache_t* __restrict B,
+                                             float* __restrict C, int32_t M,
+                                             int32_t K, int64_t lda,
+                                             int64_t ldb, int64_t ldc,
+                                             bool accumulate) {
   static_assert(N % 8 == 0, "N must be a multiple of 8");
   for (int32_t m = 0; m < M;) {
     int32_t mb = (M - m >= 8) ? 8 : (M - m >= 4) ? 4 : (M - m >= 2) ? 2 : 1;
@@ -205,19 +204,19 @@ FORCE_INLINE void gemm_macro_rvv_fma_Mx8_Ku4(const float* __restrict A,
       switch (mb) {
         case 8:
           gemm_micro_rvv_fma_Mx8_Ku4<8, kv_cache_t>(Ab, Bn, Cn, lda, ldb, ldc,
-                                                     K, accumulate);
+                                                    K, accumulate);
           break;
         case 4:
           gemm_micro_rvv_fma_Mx8_Ku4<4, kv_cache_t>(Ab, Bn, Cn, lda, ldb, ldc,
-                                                     K, accumulate);
+                                                    K, accumulate);
           break;
         case 2:
           gemm_micro_rvv_fma_Mx8_Ku4<2, kv_cache_t>(Ab, Bn, Cn, lda, ldb, ldc,
-                                                     K, accumulate);
+                                                    K, accumulate);
           break;
         default:
           gemm_micro_rvv_fma_Mx8_Ku4<1, kv_cache_t>(Ab, Bn, Cn, lda, ldb, ldc,
-                                                     K, accumulate);
+                                                    K, accumulate);
           break;
       }
     }
@@ -300,11 +299,12 @@ class AttentionImpl<ISA::RVV, scalar_t, head_dim> {
     return HeadDimAlignment;
   }
 
-  static void copy_q_heads_tile(
-      scalar_t* __restrict__ src,
-      float* __restrict__ q_buffer, const int32_t q_num,
-      const int32_t q_heads_per_kv, const int64_t q_num_stride,
-      const int64_t q_head_stride, float scale) {
+  static void copy_q_heads_tile(scalar_t* __restrict__ src,
+                                float* __restrict__ q_buffer,
+                                const int32_t q_num,
+                                const int32_t q_heads_per_kv,
+                                const int64_t q_num_stride,
+                                const int64_t q_head_stride, float scale) {
     static_assert(head_dim % 16 == 0);
     constexpr int32_t unroll_size = head_dim / 16;
     using load_vec_t = typename VecTypeTrait<scalar_t>::vec_t;
@@ -371,7 +371,8 @@ class AttentionImpl<ISA::RVV, scalar_t, head_dim> {
                 vfloat32m2_t v = __riscv_vle32_v_f32m2(
                     reinterpret_cast<const float*>(key_start_ptr + i), vl);
                 __riscv_vsse32_v_f32m2(
-                    reinterpret_cast<float*>(key_cache_start_ptr + i * block_size),
+                    reinterpret_cast<float*>(key_cache_start_ptr +
+                                             i * block_size),
                     byte_stride, v, vl);
               } else {
                 // Half and BFloat16 are both 16-bit types
@@ -379,7 +380,8 @@ class AttentionImpl<ISA::RVV, scalar_t, head_dim> {
                 vuint16m1_t v = __riscv_vle16_v_u16m1(
                     reinterpret_cast<const uint16_t*>(key_start_ptr + i), vl);
                 __riscv_vsse16_v_u16m1(
-                    reinterpret_cast<uint16_t*>(key_cache_start_ptr + i * block_size),
+                    reinterpret_cast<uint16_t*>(key_cache_start_ptr +
+                                                i * block_size),
                     byte_stride, v, vl);
               }
               i += vl;
