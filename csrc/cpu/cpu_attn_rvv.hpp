@@ -8,6 +8,15 @@
 #include <riscv_vector.h>
 #include <type_traits>
 
+// This kernel is currently hardcoded to VLEN=128 (m1/m2 intrinsics, vl=8).
+// The fixed-width typedefs below use `riscv_rvv_vector_bits(128)`, which
+// only matches `vfloat16m1_t`/`vuint16m1_t` register layout when VLEN==128;
+// at VLEN>=256 those typedefs fail to compile.  For non-128 VLEN builds we
+// omit the file body and let the dispatcher fall back to the scalar VEC /
+// VEC16 implementations.  TODO: migrate to RVVI() macros + semantic names
+// in cpu_types_riscv_defs.hpp to support VLEN>=256 natively.
+#if defined(__riscv_v_min_vlen) && __riscv_v_min_vlen == 128
+
 namespace cpu_attention {
 
 namespace {
@@ -16,7 +25,6 @@ namespace {
 // VLEN-independent semantic names (fixed_fp32x8_t, fixed_fp16x8_t, ...),
 // but this kernel is currently hardcoded to VLEN=128 (m1/m2 intrinsics),
 // so keep the legacy concrete aliases scoped to this file.
-// TODO: migrate to RVVI() macros + semantic names to support VLEN>=256.
 typedef vfloat16m1_t fixed_vfloat16m1_t
     __attribute__((riscv_rvv_vector_bits(128)));
 typedef vfloat32m2_t fixed_vfloat32m2_t
@@ -25,14 +33,14 @@ typedef vuint16m1_t fixed_vuint16m1_t
     __attribute__((riscv_rvv_vector_bits(128)));
 typedef vuint32m2_t fixed_vuint32m2_t
     __attribute__((riscv_rvv_vector_bits(256)));
-#ifdef RISCV_BF16_SUPPORT
+  #ifdef RISCV_BF16_SUPPORT
 typedef vbfloat16m1_t fixed_vbfloat16m1_t
     __attribute__((riscv_rvv_vector_bits(128)));
-#endif
+  #endif
 
-#define BLOCK_SIZE_ALIGNMENT 32
-#define HEAD_SIZE_ALIGNMENT 32
-#define MAX_Q_HEAD_NUM_PER_ITER 16
+  #define BLOCK_SIZE_ALIGNMENT 32
+  #define HEAD_SIZE_ALIGNMENT 32
+  #define MAX_Q_HEAD_NUM_PER_ITER 16
 
 // ============================================================================
 // B-matrix row loading: load 8 elements as FP32 (using m2 LMUL at VLEN=128)
@@ -49,26 +57,38 @@ FORCE_INLINE fixed_vfloat32m2_t load_row8_B_as_f32<float>(const float* p) {
 template <>
 FORCE_INLINE fixed_vfloat32m2_t
 load_row8_B_as_f32<c10::Half>(const c10::Half* p) {
+  #ifdef RISCV_FP16_SUPPORT
   fixed_vfloat16m1_t h =
       __riscv_vle16_v_f16m1(reinterpret_cast<const _Float16*>(p), 8);
   return __riscv_vfwcvt_f_f_v_f32m2(h, 8);
+  #else
+  // Fallback for hardware without Zvfh: scalar half->float conversion.
+  // c10::Half provides operator float() so this is correct on any RVV CPU
+  // that has only the base V extension.  Slower than the Zvfh path, but
+  // keeps the kernel buildable on Zvfhmin-only / no-fp16 hardware.
+  alignas(16) float tmp[8];
+  for (int i = 0; i < 8; ++i) {
+    tmp[i] = static_cast<float>(p[i]);
+  }
+  return __riscv_vle32_v_f32m2(tmp, 8);
+  #endif
 }
 
 template <>
 FORCE_INLINE fixed_vfloat32m2_t
 load_row8_B_as_f32<c10::BFloat16>(const c10::BFloat16* p) {
-#ifdef RISCV_BF16_SUPPORT
+  #ifdef RISCV_BF16_SUPPORT
   fixed_vbfloat16m1_t bf =
       __riscv_vle16_v_bf16m1(reinterpret_cast<const __bf16*>(p), 8);
   return __riscv_vfwcvtbf16_f_f_v_f32m2(bf, 8);
-#else
+  #else
   // Fallback: load as uint16, zero-extend to uint32, shift left by 16
   fixed_vuint16m1_t raw =
       __riscv_vle16_v_u16m1(reinterpret_cast<const uint16_t*>(p), 8);
   fixed_vuint32m2_t wide = __riscv_vzext_vf2_u32m2(raw, 8);
   fixed_vuint32m2_t shifted = __riscv_vsll_vx_u32m2(wide, 16, 8);
   return __riscv_vreinterpret_v_u32m2_f32m2(shifted);
-#endif
+  #endif
 }
 
 // ============================================================================
@@ -94,31 +114,31 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
 
   constexpr size_t vl = 8;
 
-// helpers for per-M codegen
-#define ROWS_APPLY(OP) OP(0) OP(1) OP(2) OP(3) OP(4) OP(5) OP(6) OP(7)
-#define IF_M(i) if constexpr (M > (i))
+  // helpers for per-M codegen
+  #define ROWS_APPLY(OP) OP(0) OP(1) OP(2) OP(3) OP(4) OP(5) OP(6) OP(7)
+  #define IF_M(i) if constexpr (M > (i))
 
-  // A row base pointers
-#define DECL_A(i) const float* a##i = A + (i) * lda;
+    // A row base pointers
+  #define DECL_A(i) const float* a##i = A + (i) * lda;
   ROWS_APPLY(DECL_A)
-#undef DECL_A
+  #undef DECL_A
 
-  // declare one m2 accumulator per row
-#define DECL_ACC(i) fixed_vfloat32m2_t acc##i;
+    // declare one m2 accumulator per row
+  #define DECL_ACC(i) fixed_vfloat32m2_t acc##i;
   ROWS_APPLY(DECL_ACC)
-#undef DECL_ACC
+  #undef DECL_ACC
 
-  // initialize accumulators
-#define INIT_ACC(i)                                      \
-  IF_M(i) {                                              \
-    if (accumulate) {                                    \
-      acc##i = __riscv_vle32_v_f32m2(C + (i) * ldc, vl); \
-    } else {                                             \
-      acc##i = __riscv_vfmv_v_f_f32m2(0.f, vl);          \
-    }                                                    \
-  }
+    // initialize accumulators
+  #define INIT_ACC(i)                                      \
+    IF_M(i) {                                              \
+      if (accumulate) {                                    \
+        acc##i = __riscv_vle32_v_f32m2(C + (i) * ldc, vl); \
+      } else {                                             \
+        acc##i = __riscv_vfmv_v_f_f32m2(0.f, vl);          \
+      }                                                    \
+    }
   ROWS_APPLY(INIT_ACC)
-#undef INIT_ACC
+  #undef INIT_ACC
 
   int32_t k = 0;
 
@@ -128,57 +148,65 @@ FORCE_INLINE void gemm_micro_rvv_fma_Mx8_Ku4(
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 0) * ldb);
-#define STEP_K0(i) \
-  IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 0), b, vl); }
+  #define STEP_K0(i)                                                    \
+    IF_M(i) {                                                           \
+      acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 0), b, vl); \
+    }
       ROWS_APPLY(STEP_K0)
-#undef STEP_K0
+  #undef STEP_K0
     }
     // k + 1
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 1) * ldb);
-#define STEP_K1(i) \
-  IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 1), b, vl); }
+  #define STEP_K1(i)                                                    \
+    IF_M(i) {                                                           \
+      acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 1), b, vl); \
+    }
       ROWS_APPLY(STEP_K1)
-#undef STEP_K1
+  #undef STEP_K1
     }
     // k + 2
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 2) * ldb);
-#define STEP_K2(i) \
-  IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 2), b, vl); }
+  #define STEP_K2(i)                                                    \
+    IF_M(i) {                                                           \
+      acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 2), b, vl); \
+    }
       ROWS_APPLY(STEP_K2)
-#undef STEP_K2
+  #undef STEP_K2
     }
     // k + 3
     {
       fixed_vfloat32m2_t b =
           load_row8_B_as_f32<kv_cache_t>(B + (int64_t)(k + 3) * ldb);
-#define STEP_K3(i) \
-  IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 3), b, vl); }
+  #define STEP_K3(i)                                                    \
+    IF_M(i) {                                                           \
+      acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k + 3), b, vl); \
+    }
       ROWS_APPLY(STEP_K3)
-#undef STEP_K3
+  #undef STEP_K3
     }
   }
 
   // K tail
   for (; k < K; ++k) {
     fixed_vfloat32m2_t b = load_row8_B_as_f32<kv_cache_t>(B + (int64_t)k * ldb);
-#define TAIL_ROW(i) \
-  IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k), b, vl); }
+  #define TAIL_ROW(i) \
+    IF_M(i) { acc##i = __riscv_vfmacc_vf_f32m2(acc##i, *(a##i + k), b, vl); }
     ROWS_APPLY(TAIL_ROW)
-#undef TAIL_ROW
+  #undef TAIL_ROW
   }
 
-  // store accumulators to C
-#define STORE_ROW(i) \
-  IF_M(i) { __riscv_vse32_v_f32m2(C + (i) * ldc, acc##i, vl); }
+    // store accumulators to C
+  #define STORE_ROW(i) \
+    IF_M(i) { __riscv_vse32_v_f32m2(C + (i) * ldc, acc##i, vl); }
   ROWS_APPLY(STORE_ROW)
-#undef STORE_ROW
+  #undef STORE_ROW
 
-#undef ROWS_APPLY
-#undef IF_M
+  #undef ROWS_APPLY
+  #undef IF_M
 }
 
 // ============================================================================
@@ -340,7 +368,7 @@ class AttentionImpl<ISA::RVV, scalar_t, head_dim> {
       const int64_t value_head_num_stride, const int64_t num_blocks,
       const int64_t num_blocks_stride, const int64_t cache_head_num_stride,
       const int64_t block_size, const int64_t block_size_stride) {
-#pragma omp parallel for collapse(2)
+  #pragma omp parallel for collapse(2)
     for (int64_t token_idx = 0; token_idx < token_num; ++token_idx) {
       for (int64_t head_idx = 0; head_idx < head_num; ++head_idx) {
         const int64_t pos = slot_mapping[token_idx];
@@ -406,8 +434,10 @@ class AttentionImpl<ISA::RVV, scalar_t, head_dim> {
 
 }  // namespace cpu_attention
 
-#undef BLOCK_SIZE_ALIGNMENT
-#undef HEAD_SIZE_ALIGNMENT
-#undef MAX_Q_HEAD_NUM_PER_ITER
+  #undef BLOCK_SIZE_ALIGNMENT
+  #undef HEAD_SIZE_ALIGNMENT
+  #undef MAX_Q_HEAD_NUM_PER_ITER
+
+#endif  // __riscv_v_min_vlen == 128
 
 #endif  // CPU_ATTN_RVV_HPP

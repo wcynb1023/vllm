@@ -124,6 +124,9 @@ def generate_header_file() -> str:
   #include "cpu_attn_vxe.hpp"
 #endif
 
+// cpu_attn_rvv.hpp is hardcoded to VLEN==128 (m1/m2 intrinsics, vl=8).
+// On other VLEN builds the file body becomes empty; the dispatch below
+// also gates the RVV cases on __riscv_v_min_vlen == 128.
 #ifdef __riscv
   #include "cpu_attn_rvv.hpp"
 #endif
@@ -194,14 +197,35 @@ def generate_header_file() -> str:
 
 """
 
-    # RISC-V with RVV
-    header += """#elif defined(__riscv)
+    # RISC-V with RVV.  cpu_attn_rvv.hpp is hardcoded to VLEN=128
+    # (riscv_rvv_vector_bits(128) typedefs + vl=8 m1/m2 intrinsics), so
+    # we split the dispatch into two top-level branches: VLEN==128 builds
+    # get the full RVV+VEC+VEC16 case set, other VLEN builds get a
+    # VEC/VEC16-only fallback.  Preprocessor directives cannot appear
+    # inside a #define body, so this duplication is necessary.
+    header += """#elif defined(__riscv) && __riscv_v_min_vlen == 128
 #define CPU_ATTN_DISPATCH(HEAD_DIM, ISA_TYPE, ...) \\
   [&] { \\
     int64_t encoded_params = encode_cpu_attn_params(HEAD_DIM, ISA_TYPE); \\
     switch (encoded_params) { \\
 """
     header += generate_cases_for_isa_group(["RVV", "VEC", "VEC16"])
+    header += """
+      default: { \\
+        TORCH_CHECK(false, "Unsupported CPU attention configuration: head_dim=" + \\
+                    std::to_string(HEAD_DIM) + " isa=" + \\
+                    std::to_string(static_cast<int>(ISA_TYPE))); \\
+      } \\
+    } \\
+  }()
+
+#elif defined(__riscv)
+#define CPU_ATTN_DISPATCH(HEAD_DIM, ISA_TYPE, ...) \\
+  [&] { \\
+    int64_t encoded_params = encode_cpu_attn_params(HEAD_DIM, ISA_TYPE); \\
+    switch (encoded_params) { \\
+"""
+    header += generate_cases_for_isa_group(["VEC", "VEC16"])
     header += """
       default: { \\
         TORCH_CHECK(false, "Unsupported CPU attention configuration: head_dim=" + \\
