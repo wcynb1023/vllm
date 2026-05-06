@@ -631,6 +631,7 @@ def test_varlen_with_paged_kv_normal_rvv(
     )
 
 
+@pytest.mark.parametrize("kv_cache_dtype", ["auto", "fp8_e4m3"])
 @pytest.mark.parametrize("seq_lens", SEQ_LENS)
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
 @pytest.mark.parametrize("head_size", [96])
