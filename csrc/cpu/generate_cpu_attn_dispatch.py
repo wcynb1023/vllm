@@ -21,6 +21,7 @@ ISA_TYPES = {
     "NEON": 3,
     "VXE": 4,
     "RVV": 5,
+    "VSX": 6,
 }
 
 # KV cache index: 0 = auto (same as scalar_t), 1 = fp8_e4m3, 2 = fp8_e5m2
@@ -38,7 +39,7 @@ KV_CACHE_CPP_TYPES = {
 }
 
 # ISAs supported for head_dims divisible by 32
-ISA_FOR_32 = ["AMX", "NEON", "VEC", "VEC16", "VXE", "RVV"]
+ISA_FOR_32 = ["AMX", "NEON", "VEC", "VEC16", "VXE", "RVV", "VSX"]
 
 # ISAs supported for head_dims divisible by 16 only
 ISA_FOR_16 = ["VEC16"]
@@ -156,6 +157,10 @@ def generate_header_file() -> str:
   #include "cpu_attn_rvv.hpp"
 #endif
 
+#ifdef __powerpc__
+  #include "cpu_attn_vsx.hpp"
+#endif
+
 """
 
     header += generate_helper_function()
@@ -232,6 +237,11 @@ def generate_header_file() -> str:
         fp8=False,
     )
     header += _macro_block(
+        "#elif defined(__powerpc__)",
+        ["VSX", "VEC", "VEC16"],
+        fp8=False,
+    )
+    header += _macro_block(
         "#elif defined(__AVX512F__)",
         ["VEC", "VEC16"],
         fp8=True,
@@ -248,7 +258,7 @@ def generate_header_file() -> str:
     )
     header += (
         "#endif  /* CPU_CAPABILITY_AMXBF16 / __aarch64__ / __s390x__ /"
-        " __riscv */\n\n"
+        " __riscv / __powerpc__ */\n\n"
         "#endif  // CPU_ATTN_DISPATCH_GENERATED_H\n"
     )
 
