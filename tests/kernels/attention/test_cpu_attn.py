@@ -613,6 +613,7 @@ def test_varlen_with_paged_kv_normal_rvv(
     use_alibi: bool,
     use_sink: bool,
     isa: str,
+    kv_cache_dtype: str,
 ) -> None:
     varlen_with_paged_kv(
         seq_lens=seq_lens,
@@ -626,6 +627,7 @@ def test_varlen_with_paged_kv_normal_rvv(
         use_alibi=use_alibi,
         use_sink=use_sink,
         isa=isa,
+        kv_cache_dtype=kv_cache_dtype,
     )
 
 
