@@ -229,7 +229,8 @@ def generate_header_file() -> str:
     # VEC/VEC16-only fallback.  Preprocessor directives cannot appear
     # inside a #define body, so this duplication is necessary.
     header += _macro_block(
-        "#elif defined(__riscv) && __riscv_v_min_vlen == 128",
+        "#elif defined(__riscv) && defined(__riscv_v_min_vlen) "
+        "&& __riscv_v_min_vlen == 128",
         ["RVV", "VEC", "VEC16"],
         fp8=False,
     )
