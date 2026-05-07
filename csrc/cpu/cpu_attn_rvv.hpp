@@ -33,7 +33,7 @@ typedef vuint16m1_t fixed_vuint16m1_t
     __attribute__((riscv_rvv_vector_bits(128)));
 typedef vuint32m2_t fixed_vuint32m2_t
     __attribute__((riscv_rvv_vector_bits(256)));
-  #ifdef RISCV_BF16_SUPPORT
+  #ifdef __riscv_zvfbfmin
 typedef vbfloat16m1_t fixed_vbfloat16m1_t
     __attribute__((riscv_rvv_vector_bits(128)));
   #endif
@@ -57,7 +57,7 @@ FORCE_INLINE fixed_vfloat32m2_t load_row8_B_as_f32<float>(const float* p) {
 template <>
 FORCE_INLINE fixed_vfloat32m2_t
 load_row8_B_as_f32<c10::Half>(const c10::Half* p) {
-  #ifdef RISCV_FP16_SUPPORT
+  #ifdef __riscv_zvfh
   fixed_vfloat16m1_t h =
       __riscv_vle16_v_f16m1(reinterpret_cast<const _Float16*>(p), 8);
   return __riscv_vfwcvt_f_f_v_f32m2(h, 8);
@@ -77,7 +77,7 @@ load_row8_B_as_f32<c10::Half>(const c10::Half* p) {
 template <>
 FORCE_INLINE fixed_vfloat32m2_t
 load_row8_B_as_f32<c10::BFloat16>(const c10::BFloat16* p) {
-  #ifdef RISCV_BF16_SUPPORT
+  #ifdef __riscv_zvfbfmin
   fixed_vbfloat16m1_t bf =
       __riscv_vle16_v_bf16m1(reinterpret_cast<const __bf16*>(p), 8);
   return __riscv_vfwcvtbf16_f_f_v_f32m2(bf, 8);
