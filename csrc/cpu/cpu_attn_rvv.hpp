@@ -4,18 +4,19 @@
 #ifndef CPU_ATTN_RVV_HPP
 #define CPU_ATTN_RVV_HPP
 
-#include "cpu_attn_impl.hpp"
-#include <riscv_vector.h>
-#include <type_traits>
-
 // This kernel is currently hardcoded to VLEN=128 (m1/m2 intrinsics, vl=8).
 // The fixed-width typedefs below use `riscv_rvv_vector_bits(128)`, which
 // only matches `vfloat16m1_t`/`vuint16m1_t` register layout when VLEN==128;
-// at VLEN>=256 those typedefs fail to compile.  For non-128 VLEN builds we
-// omit the file body and let the dispatcher fall back to the scalar VEC /
-// VEC16 implementations.  TODO: migrate to RVVI() macros + semantic names
-// in cpu_types_riscv_defs.hpp to support VLEN>=256 natively.
+// at VLEN>=256 those typedefs fail to compile.  Scalar RISC-V builds
+// (-march=rv64gc) additionally don't have <riscv_vector.h>.  For both
+// cases we omit the file entirely and let the dispatcher fall back to the
+// scalar VEC / VEC16 implementations.  TODO: migrate to RVVI() macros +
+// semantic names in cpu_types_riscv_defs.hpp to support VLEN>=256 natively.
 #if defined(__riscv_v_min_vlen) && __riscv_v_min_vlen == 128
+
+  #include "cpu_attn_impl.hpp"
+  #include <riscv_vector.h>
+  #include <type_traits>
 
 namespace cpu_attention {
 

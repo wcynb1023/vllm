@@ -150,10 +150,12 @@ def generate_header_file() -> str:
   #include "cpu_attn_vxe.hpp"
 #endif
 
-// cpu_attn_rvv.hpp is hardcoded to VLEN==128 (m1/m2 intrinsics, vl=8).
-// On other VLEN builds the file body becomes empty; the dispatch below
-// also gates the RVV cases on __riscv_v_min_vlen == 128.
-#ifdef __riscv
+// cpu_attn_rvv.hpp is hardcoded to VLEN==128 (m1/m2 intrinsics, vl=8) and
+// itself includes <riscv_vector.h>, which is unavailable on scalar
+// (-march=rv64gc) builds. Gate the include the same way as the dispatch
+// macro below, so non-128 / scalar RISC-V builds skip it entirely.
+#if defined(__riscv) && defined(__riscv_v_min_vlen) && \
+    __riscv_v_min_vlen == 128
   #include "cpu_attn_rvv.hpp"
 #endif
 
