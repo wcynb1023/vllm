@@ -34,6 +34,7 @@ namespace {
 using cpu_utils::ISA;
 using cpu_utils::VecTypeTrait;
 
+#if defined(__AVX512F__)
 template <typename scalar_t, ISA isa, bool has_zp, bool use_desc_act>
 class Dequantizer4b {
  public:
@@ -126,6 +127,108 @@ class Dequantizer4b {
 
       // update
       curr_q_weight += 2;
+      curr_weight += 32;
+      if constexpr (!use_desc_act) {
+        group_counter += 2;
+        if (group_counter == group_size) {
+          group_counter = 0;
+        }
+      }
+    }
+  }
+};
+#endif
+
+template <typename scalar_t, ISA isa, bool has_zp, bool use_desc_act>
+class Dequantizer8b {
+ public:
+  constexpr static int32_t pack_num = 32 / 8;
+  using scalar_vec_t = typename VecTypeTrait<scalar_t>::vec_t;
+
+ private:
+  static vec_op::FP32Vec16 load_u8_vec(const int32_t* __restrict__ q_values) {
+    alignas(64) float values[16];
+    for (int32_t pack_idx = 0; pack_idx < pack_num; ++pack_idx) {
+      uint32_t q_pack = static_cast<uint32_t>(q_values[pack_idx]);
+      for (int32_t byte_idx = 0; byte_idx < 4; ++byte_idx) {
+        int32_t q_value = (q_pack >> (byte_idx * 8)) & 0xFF;
+        values[pack_idx * 4 + byte_idx] = static_cast<float>(q_value);
+      }
+    }
+    return vec_op::FP32Vec16(values);
+  }
+
+ public:
+  static void dequant(int32_t* __restrict__ q_weight,
+                      scalar_t* __restrict__ weight,
+                      scalar_t* __restrict__ scales,
+                      int32_t* __restrict__ zeros, int32_t* __restrict__ g_idx,
+                      const int64_t scales_stride, const int64_t zeros_stride,
+                      const int32_t k_size, const int32_t group_size) {
+    int32_t* __restrict__ curr_q_weight = q_weight;
+    scalar_t* __restrict__ curr_weight = weight;
+    scalar_t* __restrict__ curr_scale = scales;
+    int32_t* __restrict__ curr_zeros = zeros;
+    vec_op::FP32Vec16 scale_0;
+    vec_op::FP32Vec16 scale_1;
+    vec_op::FP32Vec16 zero_0;
+    vec_op::FP32Vec16 zero_1;
+    int32_t group_counter = 0;
+    for (int32_t k_idx = 0; k_idx < k_size; k_idx += 2) {
+      vec_op::FP32Vec16 wb_0 = load_u8_vec(curr_q_weight);
+      vec_op::FP32Vec16 wb_1 = load_u8_vec(curr_q_weight + pack_num);
+
+      if constexpr (!use_desc_act) {
+        if (group_counter == 0) {
+          scale_0 = vec_op::FP32Vec16(scalar_vec_t(curr_scale));
+          scale_1 = vec_op::FP32Vec16(scale_0);
+          curr_scale += scales_stride;
+
+          if constexpr (has_zp) {
+            zero_0 = load_u8_vec(curr_zeros);
+            zero_1 = vec_op::FP32Vec16(zero_0);
+            curr_zeros += zeros_stride;
+          }
+        }
+      } else {
+        int32_t g_idx_0 = g_idx[k_idx];
+        int32_t g_idx_1 = g_idx[k_idx + 1];
+        scale_0 = vec_op::FP32Vec16(
+            scalar_vec_t(curr_scale + g_idx_0 * scales_stride));
+        scale_1 = vec_op::FP32Vec16(
+            scalar_vec_t(curr_scale + g_idx_1 * scales_stride));
+        if constexpr (has_zp) {
+          zero_0 = load_u8_vec(curr_zeros + g_idx_0 * zeros_stride);
+          zero_1 = load_u8_vec(curr_zeros + g_idx_1 * zeros_stride);
+        }
+      }
+
+      if constexpr (has_zp) {
+        wb_0 = wb_0 - zero_0;
+        wb_1 = wb_1 - zero_1;
+      } else {
+        vec_op::FP32Vec16 zero_bias(128.0f);
+        wb_0 = wb_0 - zero_bias;
+        wb_1 = wb_1 - zero_bias;
+      }
+
+      wb_0 = wb_0 * scale_0;
+      wb_1 = wb_1 * scale_1;
+
+      scalar_vec_t output_vec_0(wb_0);
+      scalar_vec_t output_vec_1(wb_1);
+
+#if defined(__AVX512F__)
+      if constexpr (isa == ISA::AMX) {
+        vec_op::interleave_save(output_vec_0, output_vec_1, curr_weight);
+      } else
+#endif
+      {
+        output_vec_0.save(curr_weight);
+        output_vec_1.save(curr_weight + 16);
+      }
+
+      curr_q_weight += pack_num * 2;
       curr_weight += 32;
       if constexpr (!use_desc_act) {
         group_counter += 2;
@@ -285,6 +388,67 @@ void cpu_gemm_wna16_impl(
   }
 }
 
+template <typename scalar_t, ISA isa, bool has_zp, bool use_desc_act>
+void cpu_gemm_wna16_dispatch_quant(
+    scalar_t* __restrict__ input, int32_t* __restrict__ q_weight,
+    scalar_t* __restrict__ output, scalar_t* __restrict__ scales,
+    int32_t* __restrict__ zeros, int32_t* __restrict__ g_idx,
+    scalar_t* __restrict__ bias, const int32_t m_size,
+    const int32_t n_size, const int32_t k_size, const int64_t input_stride,
+    const int64_t output_stride, const int64_t scales_group_stride,
+    const int64_t zeros_group_stride, const int32_t group_num,
+    const int32_t group_size, const int64_t pack_factor) {
+  using gemm_t = cpu_micro_gemm::MicroGemm<isa, scalar_t>;
+  if (pack_factor == 8) {
+#if defined(__AVX512F__)
+    using dequantizer_t =
+        Dequantizer4b<scalar_t, isa, has_zp, use_desc_act>;
+    cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
+        input, q_weight, output, scales, zeros, g_idx, bias, m_size, n_size,
+        k_size, input_stride, output_stride, scales_group_stride,
+        zeros_group_stride, group_num, group_size, pack_factor);
+#else
+    TORCH_CHECK(false, "4-bit cpu_gemm_wna16 requires an AVX512F build");
+#endif
+  } else {
+    using dequantizer_t =
+        Dequantizer8b<scalar_t, isa, has_zp, use_desc_act>;
+    cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
+        input, q_weight, output, scales, zeros, g_idx, bias, m_size, n_size,
+        k_size, input_stride, output_stride, scales_group_stride,
+        zeros_group_stride, group_num, group_size, pack_factor);
+  }
+}
+
+template <typename scalar_t, ISA isa>
+void cpu_gemm_wna16_dispatch_isa(
+    bool has_zp, bool use_desc_act, scalar_t* __restrict__ input,
+    int32_t* __restrict__ q_weight, scalar_t* __restrict__ output,
+    scalar_t* __restrict__ scales, int32_t* __restrict__ zeros,
+    int32_t* __restrict__ g_idx, scalar_t* __restrict__ bias,
+    const int32_t m_size, const int32_t n_size, const int32_t k_size,
+    const int64_t input_stride, const int64_t output_stride,
+    const int64_t scales_group_stride, const int64_t zeros_group_stride,
+    const int32_t group_num, const int32_t group_size,
+    const int64_t pack_factor) {
+  if (has_zp) {
+    cpu_gemm_wna16_dispatch_quant<scalar_t, isa, true, false>(
+        input, q_weight, output, scales, zeros, g_idx, bias, m_size, n_size,
+        k_size, input_stride, output_stride, scales_group_stride,
+        zeros_group_stride, group_num, group_size, pack_factor);
+  } else if (use_desc_act) {
+    cpu_gemm_wna16_dispatch_quant<scalar_t, isa, false, true>(
+        input, q_weight, output, scales, zeros, g_idx, bias, m_size, n_size,
+        k_size, input_stride, output_stride, scales_group_stride,
+        zeros_group_stride, group_num, group_size, pack_factor);
+  } else {
+    cpu_gemm_wna16_dispatch_quant<scalar_t, isa, false, false>(
+        input, q_weight, output, scales, zeros, g_idx, bias, m_size, n_size,
+        k_size, input_stride, output_stride, scales_group_stride,
+        zeros_group_stride, group_num, group_size, pack_factor);
+  }
+}
+
 void cpu_gemm_wna16(
     const torch::Tensor& input,  // [M, K]
     const torch::Tensor&
@@ -297,7 +461,8 @@ void cpu_gemm_wna16(
     const std::optional<torch::Tensor>& bias,   // [N]
     const int64_t pack_factor, const std::string& isa_hint) {
   using cpu_utils::ISA;
-  TORCH_CHECK_EQ(pack_factor, 8);  // only supports 4bits
+  TORCH_CHECK(pack_factor == 8 || pack_factor == 4,
+              "cpu_gemm_wna16 only supports 4-bit or 8-bit packed weights");
   const int32_t a_m_size = input.size(0);
   const int32_t a_k_size = input.size(1);
   const int64_t a_m_stride = input.stride(0);
@@ -319,6 +484,8 @@ void cpu_gemm_wna16(
       return ISA::AMX;
     } else if (isa_hint == "vec") {
       return ISA::VEC;
+    } else if (isa_hint == "rvv") {
+      return ISA::RVV;
     } else {
       TORCH_CHECK(false, "unsupported isa hint: " + isa_hint);
     }
@@ -329,74 +496,38 @@ void cpu_gemm_wna16(
   int32_t* g_idx_ptr = use_desc_act ? g_idx->data_ptr<int32_t>() : nullptr;
 
   VLLM_DISPATCH_16B_TYPES(input.scalar_type(), "cpu_gemm_wna16", [&]() {
+    scalar_t* bias_ptr = bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr;
+#if defined(__AVX512F__)
     if (isa == ISA::AMX) {
-      using gemm_t = cpu_micro_gemm::MicroGemm<ISA::AMX, scalar_t>;
-      if (has_zp) {
-        using dequantizer_t = Dequantizer4b<scalar_t, ISA::AMX, true, false>;
-        cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
-            input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
-            output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(), zeros_ptr,
-            g_idx_ptr, bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-            a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
-            scales_group_stride, zeros_group_stride, group_num, group_size,
-            pack_factor);
-        return;
-      }
-      if (use_desc_act) {
-        using dequantizer_t = Dequantizer4b<scalar_t, ISA::AMX, false, true>;
-        cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
-            input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
-            output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(), zeros_ptr,
-            g_idx_ptr, bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-            a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
-            scales_group_stride, zeros_group_stride, group_num, group_size,
-            pack_factor);
-        return;
-      } else {
-        using dequantizer_t = Dequantizer4b<scalar_t, ISA::AMX, false, false>;
-        cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
-            input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
-            output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(), zeros_ptr,
-            g_idx_ptr, bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-            a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
-            scales_group_stride, zeros_group_stride, group_num, group_size,
-            pack_factor);
-        return;
-      }
-    } else if (isa == ISA::VEC) {
-      using gemm_t = cpu_micro_gemm::MicroGemm<ISA::VEC, scalar_t>;
-      if (has_zp) {
-        using dequantizer_t = Dequantizer4b<scalar_t, ISA::VEC, true, false>;
-        cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
-            input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
-            output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(), zeros_ptr,
-            g_idx_ptr, bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-            a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
-            scales_group_stride, zeros_group_stride, group_num, group_size,
-            pack_factor);
-        return;
-      }
-      if (use_desc_act) {
-        using dequantizer_t = Dequantizer4b<scalar_t, ISA::VEC, false, true>;
-        cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
-            input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
-            output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(), zeros_ptr,
-            g_idx_ptr, bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-            a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
-            scales_group_stride, zeros_group_stride, group_num, group_size,
-            pack_factor);
-        return;
-      } else {
-        using dequantizer_t = Dequantizer4b<scalar_t, ISA::VEC, false, false>;
-        cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
-            input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
-            output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(), zeros_ptr,
-            g_idx_ptr, bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-            a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
-            scales_group_stride, zeros_group_stride, group_num, group_size,
-            pack_factor);
-        return;
-      }
+      cpu_gemm_wna16_dispatch_isa<scalar_t, ISA::AMX>(
+          has_zp, use_desc_act, input.data_ptr<scalar_t>(),
+          q_weight.data_ptr<int32_t>(), output.data_ptr<scalar_t>(),
+          scales.data_ptr<scalar_t>(), zeros_ptr, g_idx_ptr, bias_ptr,
+          a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
+          scales_group_stride, zeros_group_stride, group_num, group_size,
+          pack_factor);
+      return;
     }
+#endif
+    if (isa == ISA::VEC) {
+      cpu_gemm_wna16_dispatch_isa<scalar_t, ISA::VEC>(
+          has_zp, use_desc_act, input.data_ptr<scalar_t>(),
+          q_weight.data_ptr<int32_t>(), output.data_ptr<scalar_t>(),
+          scales.data_ptr<scalar_t>(), zeros_ptr, g_idx_ptr, bias_ptr,
+          a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
+          scales_group_stride, zeros_group_stride, group_num, group_size,
+          pack_factor);
+      return;
+    } else if (isa == ISA::RVV) {
+      cpu_gemm_wna16_dispatch_isa<scalar_t, ISA::RVV>(
+          has_zp, use_desc_act, input.data_ptr<scalar_t>(),
+          q_weight.data_ptr<int32_t>(), output.data_ptr<scalar_t>(),
+          scales.data_ptr<scalar_t>(), zeros_ptr, g_idx_ptr, bias_ptr,
+          a_m_size, b_n_size, a_k_size, a_m_stride, output_m_stride,
+          scales_group_stride, zeros_group_stride, group_num, group_size,
+          pack_factor);
+      return;
+    }
+    TORCH_CHECK(false, "unsupported isa hint: " + isa_hint);
   });
 }

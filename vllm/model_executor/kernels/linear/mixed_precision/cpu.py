@@ -8,12 +8,17 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
     pack_quantized_values_into_int32,
     unpack_quantized_values_into_int32,
 )
-from vllm.platforms import current_platform
+from vllm.platforms import CpuArchEnum, current_platform
 from vllm.scalar_type import scalar_types
 
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 
-_CPUWNA16_SUPPORTED_QUANT_TYPES = (scalar_types.uint4, scalar_types.uint4b8)
+_CPUWNA16_SUPPORTED_QUANT_TYPES = (
+    scalar_types.uint4,
+    scalar_types.uint4b8,
+    scalar_types.uint8,
+    scalar_types.uint8b128,
+)
 
 
 class CPUWNA16LinearKernel(MPLinearKernel):
@@ -32,6 +37,15 @@ class CPUWNA16LinearKernel(MPLinearKernel):
                 f"Quant type ({c.weight_type}) not supported by "
                 "CPUWNA16, supported types are: "
                 f"{_CPUWNA16_SUPPORTED_QUANT_TYPES}",
+            )
+
+        if (
+            current_platform.get_cpu_architecture() == CpuArchEnum.RISCV
+            and c.weight_type not in (scalar_types.uint8, scalar_types.uint8b128)
+        ):
+            return (
+                False,
+                "CPUWNA16 on RISC-V currently supports only 8-bit weights",
             )
 
         if c.group_size != -1 and c.group_size % 2 != 0:
@@ -126,6 +140,7 @@ class CPUWNA16LinearKernel(MPLinearKernel):
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         w_q, w_s, w_zp, w_gidx = self._get_weight_params(layer)
+        bits = self.config.weight_type.size_bits
         x = ops.cpu_gemm_wna16(
             input=x,
             q_weight=w_q,
@@ -133,13 +148,15 @@ class CPUWNA16LinearKernel(MPLinearKernel):
             zeros=w_zp,
             g_idx=w_gidx,
             bias=bias,
-            pack_factor=8,  # 32 // 4
+            pack_factor=32 // bits,
             isa_hint=layer.isa_hint,
         )
         return x
 
 
 def _get_isa_hint(dtype: torch.dtype) -> str:
+    if current_platform.get_cpu_architecture() == CpuArchEnum.RISCV:
+        return "rvv"
     supports_amx = torch.cpu._is_amx_tile_supported()
     if supports_amx and dtype in (torch.bfloat16,):
         return "amx"
