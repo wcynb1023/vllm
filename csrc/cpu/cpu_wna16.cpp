@@ -37,10 +37,6 @@ using cpu_utils::VecTypeTrait;
 #if defined(__riscv_v_min_vlen) && __riscv_v_min_vlen == 128
 typedef vuint8mf2_t rvv_u8x8_t
     __attribute__((riscv_rvv_vector_bits(64)));
-typedef vuint8m1_t rvv_u8x16_t
-    __attribute__((riscv_rvv_vector_bits(128)));
-typedef vint8m1_t rvv_i8x16_t
-    __attribute__((riscv_rvv_vector_bits(128)));
 typedef vint16m2_t rvv_i16x16_t
     __attribute__((riscv_rvv_vector_bits(256)));
 #endif
@@ -158,29 +154,32 @@ class Dequantizer4b {
  private:
 #if defined(__riscv_v_min_vlen) && __riscv_v_min_vlen == 128
   static vec_op::FP32Vec16 load_4b_vec_rvv(uint64_t q_values) {
-    alignas(16) static constexpr uint8_t gather_idx_data[16] = {
+    alignas(32) static constexpr uint16_t gather_idx_data[16] = {
         0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
 
     rvv_u8x8_t packed_bytes = __riscv_vle8_v_u8mf2(
         reinterpret_cast<const uint8_t*>(&q_values), 8);
-    rvv_u8x8_t low_nibbles =
-        __riscv_vand_vx_u8mf2(packed_bytes, 0xF, 8);
-    rvv_u8x8_t high_nibbles =
-        __riscv_vsrl_vx_u8mf2(packed_bytes, 4, 8);
+    fixed_u16x8_t packed_u16 =
+        RVVI(__riscv_vzext_vf2_u16, LMUL_128)(packed_bytes, 8);
+    fixed_u16x8_t low_nibbles =
+        RVVI(__riscv_vand_vx_u16, LMUL_128)(packed_u16, 0xF, 8);
+    fixed_u16x8_t high_nibbles =
+        RVVI(__riscv_vsrl_vx_u16, LMUL_128)(packed_u16, 4, 8);
 
-    rvv_u8x16_t low_high =
-        __riscv_vcreate_v_u8mf2_u8m1(low_nibbles, high_nibbles);
-    rvv_u8x16_t gather_idx =
-        __riscv_vle8_v_u8m1(gather_idx_data, 16);
-    rvv_u8x16_t q_u8 =
-        __riscv_vrgather_vv_u8m1(low_high, gather_idx, 16);
-    rvv_i8x16_t q_i8 = __riscv_vreinterpret_v_u8m1_i8m1(q_u8);
+    fixed_u16x16_t low_high = RVVI4(__riscv_vcreate_v_u16, LMUL_128,
+                                    _u16, LMUL_256)(low_nibbles,
+                                                    high_nibbles);
+    fixed_u16x16_t gather_idx =
+        RVVI(__riscv_vle16_v_u16, LMUL_256)(gather_idx_data, 16);
+    fixed_u16x16_t q_u16 =
+        RVVI(__riscv_vrgather_vv_u16, LMUL_256)(low_high, gather_idx, 16);
+    rvv_i16x16_t q_i16 = RVVI4(__riscv_vreinterpret_v_u16, LMUL_256,
+                               _i16, LMUL_256)(q_u16);
 
     if constexpr (!has_zp) {
-      q_i8 = __riscv_vsub_vx_i8m1(q_i8, 8, 16);
+      q_i16 = RVVI(__riscv_vsub_vx_i16, LMUL_256)(q_i16, 8, 16);
     }
 
-    rvv_i16x16_t q_i16 = __riscv_vsext_vf2_i16m2(q_i8, 16);
     fixed_fp32x16_t q_fp32 =
         RVVI(__riscv_vfwcvt_f_x_v_f32, LMUL_512)(q_i16, 16);
     return vec_op::FP32Vec16(q_fp32);
