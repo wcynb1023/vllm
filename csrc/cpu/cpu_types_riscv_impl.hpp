@@ -94,6 +94,10 @@ struct FP16Vec16 : public Vec<FP16Vec16> {
       : reg(RVVI(__riscv_vle16_v_f16, LMUL_256)(
             static_cast<const _Float16*>(ptr), VEC_ELEM_NUM)) {};
 
+  explicit FP16Vec16(const c10::Half v)
+      : reg(RVVI(__riscv_vfmv_v_f_f16, LMUL_256)(
+            static_cast<_Float16>(static_cast<float>(v)), VEC_ELEM_NUM)) {};
+
   explicit FP16Vec16(const FP32Vec16& vec);
 
   void save(void* ptr) const {
@@ -163,6 +167,11 @@ struct BF16Vec16 : public Vec<BF16Vec16> {
       : reg(RVVI4(__riscv_vreinterpret_v_u16, LMUL_256, _bf16,
                   LMUL_256)(RVVI(__riscv_vle16_v_u16, LMUL_256)(
             reinterpret_cast<const uint16_t*>(ptr), VEC_ELEM_NUM))) {};
+
+  explicit BF16Vec16(const c10::BFloat16 v)
+      : reg(RVVI4(__riscv_vreinterpret_v_u16, LMUL_256, _bf16,
+                  LMUL_256)(RVVI(__riscv_vmv_v_x_u16, LMUL_256)(
+            v.x, VEC_ELEM_NUM))) {};
 
   explicit BF16Vec16(fixed_bf16x16_t data) : reg(data) {};
   explicit BF16Vec16(const FP32Vec16&);
@@ -289,6 +298,12 @@ struct BF16Vec16 : public Vec<BF16Vec16> {
       std::memcpy(&tmp[i], &v, 4);
     }
     reg_fp32 = RVVI(__riscv_vle32_v_f32, LMUL_512)(tmp, 16);
+  }
+  explicit BF16Vec16(const c10::BFloat16 v) {
+    uint32_t val = static_cast<uint32_t>(v.x) << 16;
+    float tmp;
+    std::memcpy(&tmp, &val, 4);
+    reg_fp32 = RVVI(__riscv_vfmv_v_f_f32, LMUL_512)(tmp, VEC_ELEM_NUM);
   }
   explicit BF16Vec16(const FP32Vec16&);
   void save(void* ptr) const {
