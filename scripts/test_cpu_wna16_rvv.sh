@@ -39,9 +39,11 @@ detect_vlen() {
 
 export VLLM_TARGET_DEVICE=cpu
 export VLLM_RVV_VLEN="$(detect_vlen)"
+export MAX_JOBS="${MAX_JOBS:-4}"
 
 echo "Using VLLM_TARGET_DEVICE=${VLLM_TARGET_DEVICE}"
 echo "Using VLLM_RVV_VLEN=${VLLM_RVV_VLEN}"
+echo "Using MAX_JOBS=${MAX_JOBS}"
 
 if [[ ! -x .venv/bin/python ]]; then
   uv venv --python "${PYTHON_VERSION:-3.12}"
@@ -77,36 +79,36 @@ if not hasattr(torch.ops, "_C") or not hasattr(torch.ops._C, "cpu_gemm_wna16"):
     raise RuntimeError("torch.ops._C.cpu_gemm_wna16 is not registered")
 
 
-def pack_w8_weight(weight: torch.Tensor, zero_points: torch.Tensor | None) -> torch.Tensor:
-    # cpu_gemm_wna16 expects [N / 16, K * 4] for 8-bit packed int32 weights.
+def pack_w4_weight(weight: torch.Tensor, zero_points: torch.Tensor | None) -> torch.Tensor:
+    # cpu_gemm_wna16 expects [N / 16, K * 2] for 4-bit packed int32 weights.
     k_size, n_size = weight.shape
-    packed = torch.empty((n_size // 16, k_size * 4), dtype=torch.int32)
+    packed = torch.empty((n_size // 16, k_size * 2), dtype=torch.int32)
     for n_block in range(n_size // 16):
         for k_idx in range(k_size):
-            for pack_idx in range(4):
+            for pack_idx in range(2):
                 value = 0
-                for byte_idx in range(4):
-                    n_idx = n_block * 16 + pack_idx * 4 + byte_idx
+                for nibble_idx in range(8):
+                    n_idx = n_block * 16 + pack_idx * 8 + nibble_idx
                     if zero_points is None:
-                        stored = int(weight[k_idx, n_idx].item()) + 128
+                        stored = int(weight[k_idx, n_idx].item()) + 8
                     else:
                         stored = int(weight[k_idx, n_idx].item()) + int(
                             zero_points[n_idx].item()
                         )
-                    value |= (stored & 0xFF) << (byte_idx * 8)
+                    value |= (stored & 0xF) << (nibble_idx * 4)
                 if value >= 2**31:
                     value -= 2**32
-                packed[n_block, k_idx * 4 + pack_idx] = value
+                packed[n_block, k_idx * 2 + pack_idx] = value
     return packed
 
 
-def pack_w8_zeros(zero_points: torch.Tensor) -> torch.Tensor:
-    packed = torch.empty((1, zero_points.numel() // 4), dtype=torch.int32)
-    for pack_idx in range(zero_points.numel() // 4):
+def pack_w4_zeros(zero_points: torch.Tensor) -> torch.Tensor:
+    packed = torch.empty((1, zero_points.numel() // 8), dtype=torch.int32)
+    for pack_idx in range(zero_points.numel() // 8):
         value = 0
-        for byte_idx in range(4):
-            value |= (int(zero_points[pack_idx * 4 + byte_idx].item()) & 0xFF) << (
-                byte_idx * 8
+        for nibble_idx in range(8):
+            value |= (int(zero_points[pack_idx * 8 + nibble_idx].item()) & 0xF) << (
+                nibble_idx * 4
             )
         if value >= 2**31:
             value -= 2**32
@@ -118,17 +120,17 @@ def run_case(has_zp: bool) -> None:
     dtype = torch.bfloat16
     m_size, k_size, n_size = 3, 64, 32
     x = ((torch.arange(m_size * k_size).reshape(m_size, k_size) % 7) - 3).to(dtype)
-    weight = ((torch.arange(k_size * n_size).reshape(k_size, n_size) % 17) - 8).to(
+    weight = ((torch.arange(k_size * n_size).reshape(k_size, n_size) % 15) - 7).to(
         torch.int32
     )
     scales = torch.ones((1, n_size), dtype=dtype)
 
     if has_zp:
-        zero_points = torch.full((n_size,), 113, dtype=torch.int32)
-        q_weight = pack_w8_weight(weight, zero_points)
-        q_zeros = pack_w8_zeros(zero_points)
+        zero_points = torch.full((n_size,), 8, dtype=torch.int32)
+        q_weight = pack_w4_weight(weight, zero_points)
+        q_zeros = pack_w4_zeros(zero_points)
     else:
-        q_weight = pack_w8_weight(weight, None)
+        q_weight = pack_w4_weight(weight, None)
         q_zeros = None
 
     out = ops.cpu_gemm_wna16(
@@ -138,7 +140,7 @@ def run_case(has_zp: bool) -> None:
         zeros=q_zeros,
         g_idx=None,
         bias=None,
-        pack_factor=4,
+        pack_factor=8,
         isa_hint="rvv",
     )
     ref = (x.float() @ weight.float()).to(dtype)
@@ -147,5 +149,5 @@ def run_case(has_zp: bool) -> None:
 
 run_case(has_zp=False)
 run_case(has_zp=True)
-print("cpu_gemm_wna16 RVV W8A16 smoke test passed")
+print("cpu_gemm_wna16 RVV W4A16 smoke test passed")
 PY

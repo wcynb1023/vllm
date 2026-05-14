@@ -16,8 +16,6 @@ from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 _CPUWNA16_SUPPORTED_QUANT_TYPES = (
     scalar_types.uint4,
     scalar_types.uint4b8,
-    scalar_types.uint8,
-    scalar_types.uint8b128,
 )
 
 
@@ -37,15 +35,6 @@ class CPUWNA16LinearKernel(MPLinearKernel):
                 f"Quant type ({c.weight_type}) not supported by "
                 "CPUWNA16, supported types are: "
                 f"{_CPUWNA16_SUPPORTED_QUANT_TYPES}",
-            )
-
-        if (
-            current_platform.get_cpu_architecture() == CpuArchEnum.RISCV
-            and c.weight_type not in (scalar_types.uint8, scalar_types.uint8b128)
-        ):
-            return (
-                False,
-                "CPUWNA16 on RISC-V currently supports only 8-bit weights",
             )
 
         if c.group_size != -1 and c.group_size % 2 != 0:
@@ -140,7 +129,6 @@ class CPUWNA16LinearKernel(MPLinearKernel):
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         w_q, w_s, w_zp, w_gidx = self._get_weight_params(layer)
-        bits = self.config.weight_type.size_bits
         x = ops.cpu_gemm_wna16(
             input=x,
             q_weight=w_q,
@@ -148,7 +136,7 @@ class CPUWNA16LinearKernel(MPLinearKernel):
             zeros=w_zp,
             g_idx=w_gidx,
             bias=bias,
-            pack_factor=32 // bits,
+            pack_factor=8,  # 32 // 4
             isa_hint=layer.isa_hint,
         )
         return x
