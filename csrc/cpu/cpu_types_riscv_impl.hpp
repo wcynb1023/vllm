@@ -918,6 +918,31 @@ inline void fma(FP32Vec16& acc, const FP32Vec16& a, const FP32Vec16& b) {
   acc = acc.fma(a, b);
 }
 
+template <typename VecT>
+static void interleave_save_16b(const VecT& vec0, const VecT& vec1,
+                                void* ptr) {
+  alignas(64) uint16_t values0[VecT::VEC_ELEM_NUM];
+  alignas(64) uint16_t values1[VecT::VEC_ELEM_NUM];
+  vec0.save(values0);
+  vec1.save(values1);
+
+  auto* packed = reinterpret_cast<uint32_t*>(ptr);
+  for (int32_t i = 0; i < VecT::VEC_ELEM_NUM; ++i) {
+    packed[i] = static_cast<uint32_t>(values0[i]) |
+                (static_cast<uint32_t>(values1[i]) << 16);
+  }
+}
+
+static void interleave_save(const FP16Vec16& vec0, const FP16Vec16& vec1,
+                            void* ptr) {
+  interleave_save_16b(vec0, vec1, ptr);
+}
+
+static void interleave_save(const BF16Vec16& vec0, const BF16Vec16& vec1,
+                            void* ptr) {
+  interleave_save_16b(vec0, vec1, ptr);
+}
+
 #ifdef __riscv_zvfbfmin
 template <>
 inline void storeFP32<c10::BFloat16>(float v, c10::BFloat16* ptr) {

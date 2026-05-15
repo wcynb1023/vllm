@@ -116,13 +116,10 @@ class Dequantizer4b {
       scalar_vec_t output_vec_0(wb_0);
       scalar_vec_t output_vec_1(wb_1);
 
-#if defined(__AVX512F__)
       // AMX needs to interleave K elements to pack as 32 bits
       if constexpr (isa == ISA::AMX) {
         vec_op::interleave_save(output_vec_0, output_vec_1, curr_weight);
-      } else
-#endif
-      {
+      } else {
         output_vec_0.save(curr_weight);
         output_vec_1.save(curr_weight + 16);
       }
@@ -332,7 +329,6 @@ void cpu_gemm_wna16(
   int32_t* g_idx_ptr = use_desc_act ? g_idx->data_ptr<int32_t>() : nullptr;
 
   VLLM_DISPATCH_16B_TYPES(input.scalar_type(), "cpu_gemm_wna16", [&]() {
-#if defined(__AVX512F__)
     if (isa == ISA::AMX) {
       using gemm_t = cpu_micro_gemm::MicroGemm<ISA::AMX, scalar_t>;
       if (has_zp) {
@@ -367,9 +363,7 @@ void cpu_gemm_wna16(
             pack_factor);
         return;
       }
-    }
-#endif
-    if (isa == ISA::VEC) {
+    } else if (isa == ISA::VEC) {
       using gemm_t = cpu_micro_gemm::MicroGemm<ISA::VEC, scalar_t>;
       if (has_zp) {
         using dequantizer_t = Dequantizer4b<scalar_t, ISA::VEC, true, false>;
@@ -404,6 +398,5 @@ void cpu_gemm_wna16(
         return;
       }
     }
-    TORCH_CHECK(false, "unsupported isa hint: " + isa_hint);
   });
 }
