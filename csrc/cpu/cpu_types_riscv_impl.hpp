@@ -15,6 +15,9 @@
 #include <torch/all.h>
 namespace vec_op {
 
+struct fp8_e4m3_tag {};
+struct fp8_e5m2_tag {};
+
 // BFloat16 is always supported on RISC-V: natively when RISCV_BF16_SUPPORT
 // is defined, otherwise via the FP32-simulation fallback path.
 #define VLLM_DISPATCH_CASE_FLOATING_TYPES(...)         \
@@ -183,6 +186,9 @@ struct BF16Vec32 : public Vec<BF16Vec32> {
                   LMUL_512)(RVVI(__riscv_vle16_v_u16, LMUL_512)(
             reinterpret_cast<const uint16_t*>(ptr), VEC_ELEM_NUM))) {};
 
+  explicit BF16Vec32(const uint8_t*, fp8_e4m3_tag) : reg{} {}
+  explicit BF16Vec32(const uint8_t*, fp8_e5m2_tag) : reg{} {}
+
   explicit BF16Vec32(fixed_bf16x32_t data) : reg(data) {};
 
   explicit BF16Vec32(const BF16Vec8& v) {
@@ -322,6 +328,9 @@ struct BF16Vec32 : public Vec<BF16Vec32> {
     }
     reg_fp32 = RVVI(__riscv_vle32_v_f32, LMUL_1024)(tmp, 32);
   }
+
+  explicit BF16Vec32(const uint8_t*, fp8_e4m3_tag) : reg_fp32{} {}
+  explicit BF16Vec32(const uint8_t*, fp8_e5m2_tag) : reg_fp32{} {}
 
   explicit BF16Vec32(const BF16Vec8& v) {
     float tmp_small[8];
@@ -617,6 +626,10 @@ struct FP32Vec16 : public Vec<FP32Vec16> {
 #else
   explicit FP32Vec16(const BF16Vec16& v) : reg(v.reg_fp32) {};
 #endif
+
+  // FP8 stub: dead code on RISC-V (fp8 KV cache is x86-only), needed for
+  // load_b_pair_vec template to compile on all platforms.
+  explicit FP32Vec16(const BF16Vec32&, int) : FP32Vec16() {}
 
   FP32Vec16 operator+(const FP32Vec16& b) const {
     return FP32Vec16(
