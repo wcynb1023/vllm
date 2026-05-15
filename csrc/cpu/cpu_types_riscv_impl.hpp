@@ -629,6 +629,19 @@ struct FP32Vec16 : public Vec<FP32Vec16> {
       : reg(RVVI4(__riscv_vcreate_v_f32, LMUL_256, _f32, LMUL_512)(
             data.reg, data.reg)) {};
   explicit FP32Vec16(const FP32Vec16& data) : reg(data.reg) {};
+  explicit FP32Vec16(int64_t value, const FP32Vec16& lut) {
+    alignas(64) float lut_values[VEC_ELEM_NUM];
+    alignas(64) float values[VEC_ELEM_NUM];
+    RVVI(__riscv_vse32_v_f32, LMUL_512)(lut_values, lut.reg, VEC_ELEM_NUM);
+
+    uint64_t q_values = static_cast<uint64_t>(value);
+    for (int32_t i = 0; i < VEC_ELEM_NUM; ++i) {
+      const int32_t idx = (q_values >> (i * 4)) & 0xF;
+      values[i] = lut_values[idx];
+    }
+
+    reg = RVVI(__riscv_vle32_v_f32, LMUL_512)(values, VEC_ELEM_NUM);
+  }
   explicit FP32Vec16(const FP16Vec16& v);
 
 #ifdef __riscv_zvfbfmin
@@ -640,6 +653,10 @@ struct FP32Vec16 : public Vec<FP32Vec16> {
 #else
   explicit FP32Vec16(const BF16Vec16& v) : reg(v.reg_fp32) {};
 #endif
+
+  // FP8 stub: dead code on RISC-V (fp8 KV cache is x86-only), needed for
+  // load_b_pair_vec template to compile on all platforms.
+  explicit FP32Vec16(const BF16Vec32&, int) : FP32Vec16() {}
 
   FP32Vec16 operator+(const FP32Vec16& b) const {
     return FP32Vec16(
