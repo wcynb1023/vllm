@@ -489,6 +489,11 @@ struct FP32Vec16 : public Vec<FP32Vec16> {
   // normal load
   explicit FP32Vec16(const float* ptr) : reg(_mm512_loadu_ps(ptr)) {}
 
+  // de-pack 8 bit unsigned values
+  explicit FP32Vec16(const uint8_t* ptr)
+      : reg(_mm512_cvtepi32_ps(
+            _mm512_cvtepu8_epi32(_mm_loadu_si128((const __m128i*)ptr)))) {}
+
   // non-temporal load
   explicit FP32Vec16(bool, void* ptr)
       : reg((__m512)_mm512_stream_load_si512(ptr)) {}

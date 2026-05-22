@@ -13,7 +13,12 @@ from vllm.scalar_type import scalar_types
 
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 
-_CPUWNA16_SUPPORTED_QUANT_TYPES = (scalar_types.uint4, scalar_types.uint4b8)
+_CPUWNA16_SUPPORTED_QUANT_TYPES = (
+    scalar_types.uint4,
+    scalar_types.uint4b8,
+    scalar_types.uint8,
+    scalar_types.uint8b128,
+)
 
 
 class CPUWNA16LinearKernel(MPLinearKernel):
@@ -133,7 +138,7 @@ class CPUWNA16LinearKernel(MPLinearKernel):
             zeros=w_zp,
             g_idx=w_gidx,
             bias=bias,
-            pack_factor=8,  # 32 // 4
+            pack_factor=32 // self.config.weight_type.size_bits,
             isa_hint=layer.isa_hint,
         )
         return x

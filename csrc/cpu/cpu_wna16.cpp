@@ -34,10 +34,13 @@ namespace {
 using cpu_utils::ISA;
 using cpu_utils::VecTypeTrait;
 
-template <typename scalar_t, ISA isa, bool has_zp, bool use_desc_act>
+// W8A16 shares 4-bit dequant's scale/group handling; is_8b only switches
+// packed value and zero-point decoding.
+template <typename scalar_t, ISA isa, bool has_zp, bool use_desc_act,
+          bool is_8b = false>
 class Dequantizer4b {
  public:
-  constexpr static int32_t pack_num = 32 / 4;
+  constexpr static int32_t pack_num = is_8b ? 32 / 8 : 32 / 4;
   using scalar_vec_t = typename VecTypeTrait<scalar_t>::vec_t;
 
  public:
@@ -71,12 +74,25 @@ class Dequantizer4b {
     vec_op::FP32Vec16 scale_1;
     vec_op::FP32Vec16 zero_0;
     vec_op::FP32Vec16 zero_1;
+    if constexpr (is_8b && !has_zp) {
+      zero_0 = vec_op::FP32Vec16(128.0f);
+      zero_1 = vec_op::FP32Vec16(zero_0);
+    }
     int32_t group_counter = 0;
     for (int32_t k_idx = 0; k_idx < k_size; k_idx += 2) {
-      int64_t qwb_0 = *curr_q_weight;
-      int64_t qwb_1 = *(curr_q_weight + 1);
-      vec_op::FP32Vec16 wb_0(qwb_0, lut);
-      vec_op::FP32Vec16 wb_1(qwb_1, lut);
+      vec_op::FP32Vec16 wb_0;
+      vec_op::FP32Vec16 wb_1;
+      if constexpr (is_8b) {
+        wb_0 = vec_op::FP32Vec16(
+            reinterpret_cast<const uint8_t*>(curr_q_weight));
+        wb_1 = vec_op::FP32Vec16(
+            reinterpret_cast<const uint8_t*>(curr_q_weight + 2));
+      } else {
+        int64_t qwb_0 = *curr_q_weight;
+        int64_t qwb_1 = *(curr_q_weight + 1);
+        wb_0 = vec_op::FP32Vec16(qwb_0, lut);
+        wb_1 = vec_op::FP32Vec16(qwb_1, lut);
+      }
 
       if constexpr (!use_desc_act) {
         if (group_counter == 0) {
@@ -85,7 +101,12 @@ class Dequantizer4b {
           curr_scale += scales_stride;
 
           if constexpr (has_zp) {
-            zero_0 = vec_op::FP32Vec16(*curr_zeros, lut);
+            if constexpr (is_8b) {
+              zero_0 = vec_op::FP32Vec16(
+                  reinterpret_cast<const uint8_t*>(curr_zeros));
+            } else {
+              zero_0 = vec_op::FP32Vec16(*curr_zeros, lut);
+            }
             zero_1 = vec_op::FP32Vec16(zero_0);
             curr_zeros += zeros_stride / 2;
           }
@@ -105,7 +126,7 @@ class Dequantizer4b {
         }
       }
 
-      if constexpr (has_zp) {
+      if constexpr (has_zp || is_8b) {
         wb_0 = wb_0 - zero_0;
         wb_1 = wb_1 - zero_1;
       }
@@ -117,7 +138,7 @@ class Dequantizer4b {
       scalar_vec_t output_vec_1(wb_1);
 
       // AMX needs to interleave K elements to pack as 32 bits
-      if constexpr (isa == ISA::AMX) {
+      if constexpr (isa == ISA::AMX && !is_8b) {
         vec_op::interleave_save(output_vec_0, output_vec_1, curr_weight);
       } else {
         output_vec_0.save(curr_weight);
@@ -125,7 +146,7 @@ class Dequantizer4b {
       }
 
       // update
-      curr_q_weight += 2;
+      curr_q_weight += (is_8b) ? pack_num : 2;
       curr_weight += 32;
       if constexpr (!use_desc_act) {
         group_counter += 2;
@@ -297,7 +318,8 @@ void cpu_gemm_wna16(
     const std::optional<torch::Tensor>& bias,   // [N]
     const int64_t pack_factor, const std::string& isa_hint) {
   using cpu_utils::ISA;
-  TORCH_CHECK_EQ(pack_factor, 8);  // only supports 4bits
+  TORCH_CHECK(pack_factor == 4 || pack_factor == 8,
+              "cpu_gemm_wna16 only supports 4-bit and 8-bit weights");
   const int32_t a_m_size = input.size(0);
   const int32_t a_k_size = input.size(1);
   const int64_t a_m_stride = input.stride(0);
@@ -330,6 +352,8 @@ void cpu_gemm_wna16(
 
   VLLM_DISPATCH_16B_TYPES(input.scalar_type(), "cpu_gemm_wna16", [&]() {
     if (isa == ISA::AMX) {
+      TORCH_CHECK_EQ(pack_factor, 8,
+                     "CPU W8A16 only supports the VEC ISA path");
       using gemm_t = cpu_micro_gemm::MicroGemm<ISA::AMX, scalar_t>;
       if (has_zp) {
         using dequantizer_t = Dequantizer4b<scalar_t, ISA::AMX, true, false>;
@@ -365,6 +389,46 @@ void cpu_gemm_wna16(
       }
     } else if (isa == ISA::VEC) {
       using gemm_t = cpu_micro_gemm::MicroGemm<ISA::VEC, scalar_t>;
+      if (pack_factor == 4) {
+        if (has_zp) {
+          using dequantizer_t =
+              Dequantizer4b<scalar_t, ISA::VEC, true, false, true>;
+          cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
+              input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
+              output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(),
+              zeros_ptr, g_idx_ptr,
+              bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr, a_m_size,
+              b_n_size, a_k_size, a_m_stride, output_m_stride,
+              scales_group_stride, zeros_group_stride, group_num, group_size,
+              pack_factor);
+          return;
+        }
+        if (use_desc_act) {
+          using dequantizer_t =
+              Dequantizer4b<scalar_t, ISA::VEC, false, true, true>;
+          cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
+              input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
+              output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(),
+              zeros_ptr, g_idx_ptr,
+              bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr, a_m_size,
+              b_n_size, a_k_size, a_m_stride, output_m_stride,
+              scales_group_stride, zeros_group_stride, group_num, group_size,
+              pack_factor);
+          return;
+        } else {
+          using dequantizer_t =
+              Dequantizer4b<scalar_t, ISA::VEC, false, false, true>;
+          cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(
+              input.data_ptr<scalar_t>(), q_weight.data_ptr<int32_t>(),
+              output.data_ptr<scalar_t>(), scales.data_ptr<scalar_t>(),
+              zeros_ptr, g_idx_ptr,
+              bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr, a_m_size,
+              b_n_size, a_k_size, a_m_stride, output_m_stride,
+              scales_group_stride, zeros_group_stride, group_num, group_size,
+              pack_factor);
+          return;
+        }
+      }
       if (has_zp) {
         using dequantizer_t = Dequantizer4b<scalar_t, ISA::VEC, true, false>;
         cpu_gemm_wna16_impl<scalar_t, dequantizer_t, gemm_t>(

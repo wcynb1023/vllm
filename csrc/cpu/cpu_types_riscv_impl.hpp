@@ -634,6 +634,13 @@ struct FP32Vec16 : public Vec<FP32Vec16> {
       : reg(RVVI(__riscv_vfmv_v_f_f32, LMUL_512)(0.0f, VEC_ELEM_NUM)) {};
   explicit FP32Vec16(const float* ptr)
       : reg(RVVI(__riscv_vle32_v_f32, LMUL_512)(ptr, VEC_ELEM_NUM)) {};
+  explicit FP32Vec16(const uint8_t* ptr) {
+    alignas(64) float values[VEC_ELEM_NUM];
+    for (int i = 0; i < VEC_ELEM_NUM; ++i) {
+      values[i] = static_cast<float>(ptr[i]);
+    }
+    reg = RVVI(__riscv_vle32_v_f32, LMUL_512)(values, VEC_ELEM_NUM);
+  };
   explicit FP32Vec16(fixed_fp32x16_t data) : reg(data) {};
   explicit FP32Vec16(const FP32Vec8& data)
       : reg(RVVI4(__riscv_vcreate_v_f32, LMUL_256, _f32, LMUL_512)(
