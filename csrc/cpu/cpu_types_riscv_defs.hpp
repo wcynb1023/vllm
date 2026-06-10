@@ -63,6 +63,10 @@ typedef RVVTYPE(vint32, LMUL_256, _t) fixed_i32x8_t
 typedef RVVTYPE(vint32, LMUL_512, _t) fixed_i32x16_t
     __attribute__((riscv_rvv_vector_bits(512)));
 
+// int8
+typedef RVVTYPE(vint8, LMUL_512, _t) fixed_i8x64_t
+    __attribute__((riscv_rvv_vector_bits(512)));
+
 // uint16
 typedef RVVTYPE(vuint16, LMUL_128, _t) fixed_u16x8_t
     __attribute__((riscv_rvv_vector_bits(128)));

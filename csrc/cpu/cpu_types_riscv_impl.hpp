@@ -57,6 +57,30 @@ struct Vec {
 struct FP32Vec8;
 struct FP32Vec16;
 
+struct INT8Vec64 : public Vec<INT8Vec64> {
+  constexpr static int VEC_ELEM_NUM = 64;
+  fixed_i8x64_t reg;
+
+  explicit INT8Vec64(const int8_t* ptr)
+      : reg(RVVI(__riscv_vle8_v_i8, LMUL_512)(ptr, VEC_ELEM_NUM)) {};
+
+  explicit INT8Vec64(void* ptr) : INT8Vec64(static_cast<int8_t*>(ptr)) {};
+
+  explicit INT8Vec64(bool, const int8_t* ptr) : INT8Vec64(ptr) {};
+
+  explicit INT8Vec64(bool, void* ptr) : INT8Vec64(static_cast<int8_t*>(ptr)) {};
+
+  void save(int8_t* ptr) const {
+    RVVI(__riscv_vse8_v_i8, LMUL_512)(ptr, reg, VEC_ELEM_NUM);
+  }
+
+  void save(int8_t* ptr, const int elem_num) const {
+    RVVI(__riscv_vse8_v_i8, LMUL_512)(ptr, reg, elem_num);
+  }
+
+  void nt_save(int8_t* ptr) const { save(ptr); }
+};
+
 // ============================================================================
 // FP16 Implementation
 // ============================================================================

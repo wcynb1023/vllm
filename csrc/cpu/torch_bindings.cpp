@@ -379,7 +379,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
 
 // SHM CCL
 #if defined(__AVX512F__) || (defined(__aarch64__) && !defined(__APPLE__)) || \
-    defined(__powerpc64__)
+    defined(__powerpc64__) || defined(__riscv)
   ops.def(
       "init_shm_manager(str name, int group_size, int rank, int thread_num) -> "
       "int",
@@ -401,7 +401,7 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
   ops.impl("shm_send_tensor_list", torch::kCPU, &shm_send_tensor_list);
   ops.def("shm_recv_tensor_list(int handle, int src) -> Tensor[](a)",
           &shm_recv_tensor_list);
-#endif  // #if defined(__AVX512F__) || defined(__aarch64__)
+#endif  // #if defined(__AVX512F__) || defined(__aarch64__) || defined(__riscv)
 
   // sgl-kernels
 #if defined(__AVX512BF16__) && defined(__AVX512F__) && defined(__AVX512VNNI__)
